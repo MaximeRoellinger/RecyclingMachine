@@ -20,7 +20,7 @@ bus = smbus.SMBus(1) # on utilise le canal I2C numero 1
 
 generalButton = 4
 extruderMotorButon = 27
-doorState = 22
+doorState = 25
 
 # OUTPUTS :
 
@@ -30,7 +30,7 @@ shredderMotor2Positiv = 19
 shredderMotor1Negativ = 13
 shredderMotor2Negativ = 6
 #Extruder
-heathExtruder = 25
+heathExtruder = 23
 motorExtruder = 24
 #Interface :
 ledHeathing = 5
