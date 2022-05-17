@@ -432,19 +432,7 @@ iMax = 3.5
         if (measure1 > iMax & measure2 > iMax):
             global sensorIntensityHIGH
             sensorIntensityHIGH = true
-            
-            
-        
-            
-            
-    
-    
-    
-    
-    
-    
-    
-    
+       
     
     
     
@@ -459,31 +447,6 @@ def runServo():
          servo.mid()
          sleep(0.7)
     
-   
-    
-    
-    
-    
-    
-    
-    
-    
-    
-
-    
-    
-
-    
-    
-    
-
-
-
-
-
-    
-    
-
 
 
 
