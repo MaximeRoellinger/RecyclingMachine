@@ -374,7 +374,7 @@ def extrude():
                  
     #demarer le thread timer shredder en mettant la variable qui debloque le timer a 1   variable en global 
             
-    if sensorShredder >= 20:
+    if sensorExtruder >= 20:
         #reset la variable du timer qui compte et metre la varuiable qui autorise le timer a 0   variables en global a definir puis attribuer valeur
         global startTimerExtruder
         startTimerExtruder = False
