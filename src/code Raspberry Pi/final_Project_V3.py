@@ -81,8 +81,7 @@ GPIO.setup(ledDoorOpen, GPIO.OUT,initial = GPIO.LOW)
 GPIO.setup(ledNoPLA, GPIO.OUT,initial = GPIO.LOW)
 GPIO.setup(ledFailure, GPIO.OUT,initial = GPIO.LOW)
 
-# Set up I2C :
-bus = smbus.SMBus(1) # on utilise le canal I2C numero 1 donc les pins 16,20,21
+
 
 def set_pin (CS, SCK, SO, UNIT):
     global sck
