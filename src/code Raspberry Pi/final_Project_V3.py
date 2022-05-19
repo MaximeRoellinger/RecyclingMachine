@@ -42,6 +42,16 @@ ledNoPLA = 11
 ledFailure = 9
 
 
+#Interface :
+ledHeathing = 7
+ledReady = 8
+ledWorking = 1
+ledDoorClosed = 0
+ledDoorOpen = 11
+ledNoPLA = 5
+ledFailure = 9
+
+
 #I2C connection with arduino :
 
 serialData = 2
