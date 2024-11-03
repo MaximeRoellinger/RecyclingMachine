@@ -1,130 +1,142 @@
-#include <Wire.h>  // pou I2C
-#define SLAVE_ADRESS 0x08    // definit l'adresse slave 
+#include <AccelStepper.h>
+#include <Wire.h>  // for I2C communication
 
-#define CapteurFilamentHaut A1  // composante photorésistance sur la pin A1
-#define CapteurFilamentBas A0    // verifier si inverser haut et bas 
+// Define stepper motor instances
+AccelStepper smallStepper(AccelStepper::FULL4WIRE, 10, 12, 11, 13); // small stepper: IN4 = 10, IN3 = 12, IN2 = 11, IN1 = 13
+AccelStepper bigStepper(AccelStepper::FULL2WIRE, 4, 5); // big stepper: STEP = 4, DIR = 5
+AccelStepper offsetStepper(AccelStepper::FULL2WIRE, 2, 3); // offset stepper: STEP = 2, DIR = 3
 
-#define CapteurPLAShredder A2
-#define CapteurPLAExtruder A3
+// I2C settings
+#define SLAVE_ADDRESS 0x08    // I2C address for the Arduino
 
-#include <Pixy2.h>
+// Light Dependent Resistors (LDRs) for position sensing
+#define LDR_TOP A0      // Top position sensor
+#define LDR_BOTTOM A1   // Bottom position sensor
+#define LDR_SHREDDER A2 // Shredder reservoir sensor
+#define LDR_EXTRUDER A3 // Extruder reservoir sensor
 
-#include <AccelStepper.h>   // Accel steper pour les 2 step moteurs 
+// Variables for sensor readings and status
+char value[25]; // Data buffer for I2C transmission
+int filamentThickness = 0;
+int switchStatus = 0;
+bool setupComplete = false;
+long leftEndStop = 0;  // Far end of offset stepper
+long rightEndStop = 0; // Near end of offset stepper
 
+const int endSwitchPin = 6; // Switch pin to detect the end position
+int ldrTop, ldrBottom;      // LDR readings for top and bottom
 
-AccelStepper smallStepper(AccelStepper::FULL4WIRE, 6, 10, 9, 11);   // IN4 = 6 IN3 = 9  IN2 = 10 IN1 = 11 si mauvais sens alors inverser les branchements
-AccelStepper bigStepper(AccelStepper::FULL2WIRE, 3, 5);  // STEP pin , DIR Pin
+// Parameters for stepper motor control
+int bigStepperSpeed = -300;
+int smallStepperSpeed = -500;
+int setupSpeed = -2000;        // Speed during setup (initialization)
+int operationalSpeed = 1500;   // Speed during normal operation
+long travelRange = 170000;     // Distance between end stops
 
-Pixy2 pixy;
-
-char value [20];  // data avec 20 char
-
-int haut;    // valeur photoresistances
-int bas;
-int diff;    // difference des deux
-
-int   capteurPLAShredd;  // valeur photoresistance reservoir shredder
-int capteurPLAExtr;  // valeur photoresistance reservoir Extruder
-
-bool enableStepMotors ;
+// Temperature settings
+int targetTemperature = 200;
+bool temperatureReady = false;
 
 void setup() {
+  // Set up pin modes for sensors and switches
+  pinMode(LDR_TOP, INPUT);
+  pinMode(LDR_BOTTOM, INPUT);
+  pinMode(endSwitchPin, INPUT);
 
-  Serial.begin(9600);
+  // Initialize steppers with maximum speeds
+  smallStepper.setMaxSpeed(2000);
+  smallStepper.setSpeed(smallStepperSpeed);
+  
+  bigStepper.setMaxSpeed(2000);
+  bigStepper.setSpeed(bigStepperSpeed);
 
-  Wire.begin(SLAVE_ADRESS);
-  Wire.onRequest(sendData);  // lorsque le maitre demande, envoie data
+  offsetStepper.setMaxSpeed(3000);
+  offsetStepper.setSpeed(operationalSpeed);
 
+  // Start I2C communication
+  Wire.begin(SLAVE_ADDRESS);
+  Wire.onRequest(sendData);  // Event for sending data to master
+  Wire.onReceive(receiveData); // Event for receiving data from master
 
-  // definit photoresistance comme analog input
-  pinMode(CapteurFilamentBas, INPUT);
-  pinMode(CapteurFilamentHaut, INPUT);
-  pinMode(CapteurPLAShredder, INPUT);
-  pinMode(CapteurPLAExtruder, INPUT);
-
-  //initialise Pixy Cam
-  pixy.init();
-
-  //initialise stepper motors
-
-  smallStepper.setMaxSpeed(200);
- 
-
-
-  bigStepper.setMaxSpeed(120);     //-100 c'etait pas mal    entre - 70 quand fil en haut  et -110 quand fil en bas
-
-
-
+  // Serial.begin(9600); // Uncomment for debugging via Serial monitor
 }
 
 void loop() {
+  // Read the switch and sensor values
+  switchStatus = digitalRead(endSwitchPin);
+  ldrTop = analogRead(LDR_TOP);
+  ldrBottom = analogRead(LDR_BOTTOM);
 
-  haut = analogRead(CapteurFilamentBas);
-  bas = analogRead(CapteurFilamentHaut);
-  diff = haut - bas;
-
-  Serial.println("haut : " + haut);
-  Serial.println("bas : " + bas);
-  Serial.println("");
-  Serial.println("difference : " + diff);
-
-
-  capteurPLAShredd = analogRead(CapteurPLAShredder);
-  capteurPLAExtr = analogRead(CapteurPLAExtruder);
-
-
-
-
-  pixy.ccc.getBlocks();
-  // filament = map(pixy.ccc.blocks[0].m_height, 1, , 1.5 ,2  );
-
-  Serial.println(pixy.ccc.blocks[0].m_height) ;
-  Serial.println("");
-
-  if (enableStepMotors == true ) {
-
-
-    smallStepper.enableOutputs();
-     bigStepper.enableOutputs() ;
-
-    smallStepper.setSpeed(300);     // vitesse ici en fonction de l'epaisseur du filament
-    bigStepper.setSpeed(300);
-
-    smallStepper.runSpeed();        // vitesse ici en fonction de la position du filament (haut et bas )
-    bigStepper.runSpeed();
-
-  }
-  else {
-
-    smallStepper.stop();
-    bigStepper.stop();
-    smallStepper.disableOutputs();
-    bigStepper.disableOutputs();
-
-
-
+  // Adjust the small stepper motor speed based on filament thickness
+  if (filamentThickness < 140 && filamentThickness > 40) {
+    smallStepperSpeed -= (filamentThickness - 90) * 0.5; // 1.75 mm ≈ 90 pixels
+    temperatureReady = true;
+  } else {
+    smallStepperSpeed = -120;
   }
 
+  // Adjust big stepper speed based on LDR difference
+  if (ldrBottom > ldrTop + 7 && bigStepperSpeed > -100) {
+    bigStepperSpeed -= 1;
+  } else if (ldrTop >= ldrBottom + 4) {
+    bigStepperSpeed += 1;
+  }
+
+  // Update stepper speeds
+  smallStepper.setSpeed(smallStepperSpeed);
+  smallStepper.runSpeed();
+  bigStepper.setSpeed(bigStepperSpeed);
+  bigStepper.runSpeed();
+
+  // Control the offset stepper for end-stop positions
+  initializeOffsetStepper();
+  runOffsetStepper();
 }
 
+// Initializes the offset stepper to reach end positions
+void initializeOffsetStepper() {
+  if (!setupComplete && switchStatus != HIGH) {
+    offsetStepper.setSpeed(setupSpeed);
+    offsetStepper.runSpeed();
+    switchStatus = digitalRead(endSwitchPin);
+  }
+
+  if (switchStatus == HIGH && !setupComplete) {
+    leftEndStop = offsetStepper.currentPosition(); // Set left end position
+    rightEndStop = leftEndStop + travelRange;      // Define right end position based on range
+    offsetStepper.moveTo(rightEndStop);
+    offsetStepper.setSpeed(operationalSpeed);
+    setupComplete = true; // Setup is now complete
+  }
+}
+
+// Runs the offset stepper between end positions
+void runOffsetStepper() {
+  if (offsetStepper.currentPosition() != offsetStepper.targetPosition() && setupComplete) {
+    offsetStepper.runSpeedToPosition();
+  }
+
+  if (offsetStepper.currentPosition() >= rightEndStop && setupComplete) {
+    offsetStepper.moveTo(leftEndStop);
+    offsetStepper.setSpeed(operationalSpeed);
+  }
+
+  if (offsetStepper.currentPosition() <= leftEndStop && setupComplete) {
+    offsetStepper.moveTo(rightEndStop);
+    offsetStepper.setSpeed(operationalSpeed);
+  }
+}
+
+// Receives data over I2C and updates filament thickness
+void receiveData(int howMany) {
+  while (Wire.available()) {
+    filamentThickness = int(Wire.read()); // Update filament thickness
+  }
+}
+
+// Sends sensor data over I2C
 void sendData() {
-  // voir pour envoyer seulement la difference ?
-  String filamentPosHigh = String(haut);//  avec ,n sachant que n est le nombre de chiffres apres la virgule
-  String filamentPosLow  = String(bas) ;     // = String(filamentPositionLow, n )
-  String capteurPLAShredd = String(capteurPLAShredd);    // = String(capteur ..., n )
-  String capteurPLAExtr  = String(capteurPLAExtr) ;      // = String(capteur .., n )
-
-  //crer un string comportant toutes les variables separées par des ";" attention ne pas depasser 20 char ou alors augmenter la taille attention a prendre tous sauf le dernier string
-  String DataTotal = (filamentPosHigh + ";" + filamentPosLow + ";" + capteurPLAShredd + ";" + capteurPLAExtr + ";");
-
-  DataTotal.toCharArray(value, 20);
-  Wire.write(value);  // on envoie la data
-  delay(250);
-
-}
-
-void receiveData() {
-
-  enableStepMotors = Wire.read();
-
+  String dataString = String(ldrTop) + ";" + String(ldrBottom) + ";";
+  dataString.toCharArray(value, 20);
+  Wire.write(value); // Send data over I2C
 }
