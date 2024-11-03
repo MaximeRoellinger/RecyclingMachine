@@ -1,224 +1,142 @@
-
-//# include <Thread.h>
-
 #include <AccelStepper.h>
-AccelStepper smallStepper(AccelStepper::FULL4WIRE, 10, 12, 11, 13); // IN4 = 6 IN3 = 9  IN2 = 10 IN1 = 11 si mauvais sens alors inverser les branchements
-AccelStepper bigStepper(AccelStepper::FULL2WIRE, 4, 5); // STEP pin , DIR Pin
-AccelStepper bigStepperDecallage(AccelStepper::FULL2WIRE, 2, 3); // STEP pin , DIR Pin
+#include <Wire.h>  // for I2C communication
 
+// Define stepper motor instances
+AccelStepper smallStepper(AccelStepper::FULL4WIRE, 10, 12, 11, 13); // small stepper: IN4 = 10, IN3 = 12, IN2 = 11, IN1 = 13
+AccelStepper bigStepper(AccelStepper::FULL2WIRE, 4, 5); // big stepper: STEP = 4, DIR = 5
+AccelStepper offsetStepper(AccelStepper::FULL2WIRE, 2, 3); // offset stepper: STEP = 2, DIR = 3
 
-#include <Wire.h>  // pou I2C
-#define SLAVE_ADRESS 0x08    // definit l'adresse slave 
+// I2C settings
+#define SLAVE_ADDRESS 0x08    // I2C address for the Arduino
 
-#define LDR1 A1  // bas 
-#define LDR0 A0  // haut
-#define LDR3 A2  // shredder reservoir
-#define LDR4 A3  // extruder reservoir
+// Light Dependent Resistors (LDRs) for position sensing
+#define LDR_TOP A0      // Top position sensor
+#define LDR_BOTTOM A1   // Bottom position sensor
+#define LDR_SHREDDER A2 // Shredder reservoir sensor
+#define LDR_EXTRUDER A3 // Extruder reservoir sensor
 
-char value [25]; // la data pour envoyer
+// Variables for sensor readings and status
+char value[25]; // Data buffer for I2C transmission
+int filamentThickness = 0;
+int switchStatus = 0;
+bool setupComplete = false;
+long leftEndStop = 0;  // Far end of offset stepper
+long rightEndStop = 0; // Near end of offset stepper
 
-int CloseSwitch = 0;
-bool endSetup = false;
-long leftEndStopPosition = 0; // Extrémité Loin du moteur
-long rightEndStopPosition = 0; // Extrémité proche du moteur
+const int endSwitchPin = 6; // Switch pin to detect the end position
+int ldrTop, ldrBottom;      // LDR readings for top and bottom
 
-const int SwitchClosed = 6; // Switch Fil bleu sur Pin 12
+// Parameters for stepper motor control
+int bigStepperSpeed = -300;
+int smallStepperSpeed = -500;
+int setupSpeed = -2000;        // Speed during setup (initialization)
+int operationalSpeed = 1500;   // Speed during normal operation
+long travelRange = 170000;     // Distance between end stops
 
-//int pos = 0; // position du servomoteur
+// Temperature settings
+int targetTemperature = 200;
+bool temperatureReady = false;
 
-int haut; // capteur haut
+void setup() {
+  // Set up pin modes for sensors and switches
+  pinMode(LDR_TOP, INPUT);
+  pinMode(LDR_BOTTOM, INPUT);
+  pinMode(endSwitchPin, INPUT);
 
-int bas; // capteur bas
-
-
-
-// PARAMETRE
-
-
-// MOTEUR DECALLAGE
-// Vitesse Positive = Le chariot s'éloigne du moteur
-// Vitesse Négative = Le chariot se raproche du moteur
-
-
-// A CALIBRER
-
-int speedBigMotor = -300;
-int speedSmallMotor = -500 ;
-int setupSpeed = -2000; // Vitesse de mise à 0
-int workingSpeed = 1500; // Vitesse de fonctionnement
-long range = 170000 ;// Distance entre les deux extrémités // 160 000 pas mal
-
-int temperature = 200 ;
-bool temperatureOK = false;
-int withFilament = 0;
-
-void setup()
-{
-
-
-  pinMode(LDR1, INPUT);
-  pinMode(LDR0, INPUT);
-
+  // Initialize steppers with maximum speeds
   smallStepper.setMaxSpeed(2000);
-  smallStepper.setSpeed(speedSmallMotor);
-
-
+  smallStepper.setSpeed(smallStepperSpeed);
+  
   bigStepper.setMaxSpeed(2000);
-  bigStepper.setSpeed(speedBigMotor);
+  bigStepper.setSpeed(bigStepperSpeed);
 
-  pinMode(SwitchClosed, INPUT);  // bouton pour le stepmotor decallage
-  bigStepperDecallage.setMaxSpeed(3000);
-  bigStepperDecallage.setSpeed(workingSpeed);
+  offsetStepper.setMaxSpeed(3000);
+  offsetStepper.setSpeed(operationalSpeed);
 
-  Wire.begin(SLAVE_ADRESS); // adresse de l'arduino pour le raspberry pi
-  Wire.onRequest(sendData);
+  // Start I2C communication
+  Wire.begin(SLAVE_ADDRESS);
+  Wire.onRequest(sendData);  // Event for sending data to master
+  Wire.onReceive(receiveData); // Event for receiving data from master
 
-  Wire.onReceive(receiveEvent);  // lorsque le raspberry pi envoie une info
-
-
-
-  // Serial.begin(9600);
-
-
+  // Serial.begin(9600); // Uncomment for debugging via Serial monitor
 }
 
+void loop() {
+  // Read the switch and sensor values
+  switchStatus = digitalRead(endSwitchPin);
+  ldrTop = analogRead(LDR_TOP);
+  ldrBottom = analogRead(LDR_BOTTOM);
 
-
-void loop()
-{
-  CloseSwitch = digitalRead(SwitchClosed); // Lecture de la valeur du Switch 0=Ouvert // 1=Fermé
-
-  haut = analogRead(LDR1);
-
-  bas = analogRead(LDR0);
-
-
-  //  Serial.println("haut :");
-  // Serial.println(haut);
-
-  // Serial.println(" ");
-
-  // Serial.println("bas :");
-  // Serial.println(bas);
-  // Serial.println(" ");
-
-  // Serial.println("epaisseur :");
-  // Serial.println(withFilament);
-
-  // Serial.println(" ");
-
-  if (withFilament < 140 & withFilament > 40) {
-    speedSmallMotor = speedSmallMotor - (withFilament - 90) * 0.5 ; //  1.75 mm <=> 90 pixels
-
-    temperatureOK = true;
-  }
-  else {
-    speedSmallMotor = -120 ;
+  // Adjust the small stepper motor speed based on filament thickness
+  if (filamentThickness < 140 && filamentThickness > 40) {
+    smallStepperSpeed -= (filamentThickness - 90) * 0.5; // 1.75 mm ≈ 90 pixels
+    temperatureReady = true;
+  } else {
+    smallStepperSpeed = -120;
   }
 
-
-
-  if ( bas > haut + 7 & speedBigMotor > -100 ) {
-
-    speedBigMotor = speedBigMotor - 1 ;
-
+  // Adjust big stepper speed based on LDR difference
+  if (ldrBottom > ldrTop + 7 && bigStepperSpeed > -100) {
+    bigStepperSpeed -= 1;
+  } else if (ldrTop >= ldrBottom + 4) {
+    bigStepperSpeed += 1;
   }
 
-  else if ( haut >= bas + 4 ) {
-
-    speedBigMotor = speedBigMotor + 1;
-  }
-
-  //Serial.println(speedBigMotor);
-
-  //if (temperatureOK == true) {
-
-
-  smallStepper.setSpeed(speedSmallMotor);
+  // Update stepper speeds
+  smallStepper.setSpeed(smallStepperSpeed);
   smallStepper.runSpeed();
-  bigStepper.setSpeed(speedBigMotor );
+  bigStepper.setSpeed(bigStepperSpeed);
   bigStepper.runSpeed();
-  setupMotorDecallage();
-  runMotorDecallage();
 
-  //}
-
+  // Control the offset stepper for end-stop positions
+  initializeOffsetStepper();
+  runOffsetStepper();
 }
 
-
-
-void setupMotorDecallage() {
-
-  if (endSetup == false && CloseSwitch != 1)
-  {
-    bigStepperDecallage.setSpeed(setupSpeed);
-    bigStepperDecallage.runSpeed();
-    CloseSwitch = digitalRead(SwitchClosed);
+// Initializes the offset stepper to reach end positions
+void initializeOffsetStepper() {
+  if (!setupComplete && switchStatus != HIGH) {
+    offsetStepper.setSpeed(setupSpeed);
+    offsetStepper.runSpeed();
+    switchStatus = digitalRead(endSwitchPin);
   }
-  if ( CloseSwitch == 1 && endSetup == false)
-  {
 
-    leftEndStopPosition = bigStepperDecallage.currentPosition(); // Attribution de left value à la position actuelle (Current position va etre de 0)
-    rightEndStopPosition = leftEndStopPosition + range; //Attribution de la distance avec l'autre extrémité
-    bigStepperDecallage.moveTo(rightEndStopPosition);
-    bigStepperDecallage.setSpeed(workingSpeed);
-    endSetup = true; // Sortie du mode Setup
-
+  if (switchStatus == HIGH && !setupComplete) {
+    leftEndStop = offsetStepper.currentPosition(); // Set left end position
+    rightEndStop = leftEndStop + travelRange;      // Define right end position based on range
+    offsetStepper.moveTo(rightEndStop);
+    offsetStepper.setSpeed(operationalSpeed);
+    setupComplete = true; // Setup is now complete
   }
 }
 
-
-void runMotorDecallage() {
-
-  if (bigStepperDecallage.currentPosition() != bigStepperDecallage.targetPosition() && endSetup == true)
-  {
-    bigStepperDecallage.runSpeedToPosition();
+// Runs the offset stepper between end positions
+void runOffsetStepper() {
+  if (offsetStepper.currentPosition() != offsetStepper.targetPosition() && setupComplete) {
+    offsetStepper.runSpeedToPosition();
   }
 
-  if (bigStepperDecallage.currentPosition() >= rightEndStopPosition && endSetup == true)
-  {
-    bigStepperDecallage.moveTo(leftEndStopPosition);
-    bigStepperDecallage.setSpeed(workingSpeed);
-
+  if (offsetStepper.currentPosition() >= rightEndStop && setupComplete) {
+    offsetStepper.moveTo(leftEndStop);
+    offsetStepper.setSpeed(operationalSpeed);
   }
-  if (bigStepperDecallage.currentPosition() <= leftEndStopPosition && endSetup == true)
-  {
-    bigStepperDecallage.moveTo(rightEndStopPosition);
-    bigStepperDecallage.setSpeed(workingSpeed);
 
+  if (offsetStepper.currentPosition() <= leftEndStop && setupComplete) {
+    offsetStepper.moveTo(rightEndStop);
+    offsetStepper.setSpeed(operationalSpeed);
   }
 }
 
-
-void receiveEvent(int howMany) {
-  while ( Wire.available())
-  {
-    //ignorer la valeur 0
-    withFilament =  int(Wire.read()); // receive byte as a character
-
-    //   if (temperatureTest > 0) {
-    //   temperature = temperatureTest;
-    //   Serial.println(temperature);
+// Receives data over I2C and updates filament thickness
+void receiveData(int howMany) {
+  while (Wire.available()) {
+    filamentThickness = int(Wire.read()); // Update filament thickness
   }
 }
 
+// Sends sensor data over I2C
 void sendData() {
-
-  String filamentPosHigh   = String(haut );// avec n le nombre de chiffres apres la virgule
-  String filamentPosLow  = String(bas );    // = String(filamentPositionLow, n )
-  // String capteurPLAShredder = String(capteurPLAShredd ) ;    // = String(capteur ..., n )
-  // String capteurPLAExtruder  = String(capteurPLAExtr )  ;      // = String(capteur .., n )
-
-
-  // String filamentPosHigh = String(haut);//  avec ,n sachant que n est le nombre de chiffres apres la virgule
-  // String filamentPosLow  = String(bas) ;     // = String(filamentPositionLow, n )
-
-  // String capteurPLAShredd =  String(capteurPLAShredd);
-  // String capteurPLAExtr  =   String(capteurPLAExtr) ;
-
-
-  String DataTotal = (filamentPosHigh + ";" + filamentPosLow + ";"); //+ capteurPLAShredd + ";" + capteurPLAExtr + ";");
-
-  DataTotal.toCharArray(value, 20);
-  Wire.write(value);
+  String dataString = String(ldrTop) + ";" + String(ldrBottom) + ";";
+  dataString.toCharArray(value, 20);
+  Wire.write(value); // Send data over I2C
 }
